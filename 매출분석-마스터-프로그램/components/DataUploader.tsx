@@ -41,8 +41,6 @@ const DataUploader: React.FC<Props> = ({ onDataLoaded, autoStart = false, onSync
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved'>('idle');
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkText, setBulkText] = useState('');
-  
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(connections));
@@ -106,7 +104,7 @@ const DataUploader: React.FC<Props> = ({ onDataLoaded, autoStart = false, onSync
       const gid = gidMatch ? gidMatch[1] : '0';
       const newConn: SheetConnection = {
         id: Math.random().toString(36).substr(2, 9),
-        name: newName.trim() || `채널-${connections.length + 1}`,
+        name: newName.trim() || `시트-${connections.length + 1}`,
         url: newUrl,
         gid: gid,
         status: 'success'
@@ -122,60 +120,40 @@ const DataUploader: React.FC<Props> = ({ onDataLoaded, autoStart = false, onSync
   };
 
   const clearAllConnections = () => {
-    if (window.confirm("등록된 모든 데이터 소스를 삭제하시겠습니까? (이 작업은 되돌릴 수 없습니다)")) {
+    if (window.confirm("등록된 모든 데이터 소스를 삭제하시겠습니까?")) {
       setConnections([]);
-      setNewUrl('');
-      setNewName('');
-      setBulkText('');
-      setError(null);
-      setIsLoading(false);
       localStorage.removeItem(STORAGE_KEY);
       onDataLoaded([]);
     }
   };
 
-  const processBulkLines = (text: string) => {
-    const lines = text.split('\n').filter(line => line.trim());
+  const handleBulkImport = () => {
+    const lines = bulkText.split('\n').filter(line => line.trim());
     const newConns: SheetConnection[] = [];
     lines.forEach(line => {
+      const parts = line.split(':');
       let name = '';
       let url = '';
-      if (line.includes('http')) {
-        if (line.includes(':')) {
-          const firstColon = line.indexOf(':');
-          const possibleUrl = line.substring(firstColon + 1).trim();
-          if (possibleUrl.startsWith('http')) {
-            name = line.substring(0, firstColon).trim();
-            url = possibleUrl;
-          } else {
-            url = line.trim();
-          }
-        } else {
-          url = line.trim();
-        }
-        const exportUrl = getExportUrl(url);
-        if (exportUrl) {
-          const gidMatch = url.match(/gid=([0-9]+)/);
-          newConns.push({ 
-            id: Math.random().toString(36).substr(2, 9), 
-            name: name || `채널-${newConns.length + 1}`, 
-            url: url, 
-            gid: gidMatch ? gidMatch[1] : '0', 
-            status: 'success' 
-          });
-        }
+      if (parts.length >= 2 && parts[1].includes('http')) {
+        name = parts[0].trim();
+        url = parts.slice(1).join(':').trim();
+      } else {
+        url = line.trim();
+      }
+      const exportUrl = getExportUrl(url);
+      if (exportUrl) {
+        const gidMatch = url.match(/gid=([0-9]+)/);
+        newConns.push({
+          id: Math.random().toString(36).substr(2, 9),
+          name: name || `시트-${newConns.length + 1}`,
+          url: url,
+          gid: gidMatch ? gidMatch[1] : '0',
+          status: 'success'
+        });
       }
     });
-    return newConns;
-  };
-
-  const handleBulkImport = () => {
-    const newConns = processBulkLines(bulkText);
-    if (newConns.length > 0) {
-      setConnections(prev => [...prev, ...newConns]);
-      setBulkText('');
-      setShowBulkModal(false);
-    }
+    setConnections(prev => [...prev, ...newConns]);
+    setShowBulkModal(false);
   };
 
   const startAnalysis = async () => {
@@ -184,104 +162,95 @@ const DataUploader: React.FC<Props> = ({ onDataLoaded, autoStart = false, onSync
     onSyncStatusChange?.(true);
     setError(null);
     const mergedMap: Record<string, RawSalesData> = {};
+    
     try {
       for (const conn of connections) {
         const exportUrl = getExportUrl(conn.url);
         if (!exportUrl) continue;
-        try {
-          const response = await fetch(exportUrl);
-          if (!response.ok) throw new Error(`HTTP Error: ${response.status}`);
-          const text = await response.text();
-          const rows = parseCSV(text);
-          if (rows.length < 2) continue;
+        
+        const response = await fetch(exportUrl);
+        const text = await response.text();
+        const rows = parseCSV(text);
+        if (rows.length < 2) continue;
+        
+        const headers = rows[0];
+        
+        // 컬럼 위치 동적 찾기 (가맹점, 담당자, 지역)
+        let storeIdx = headers.findIndex(h => h.includes('가맹점'));
+        let managerIdx = headers.findIndex(h => h.includes('담당') || h.includes('관리자'));
+        let regionIdx = headers.findIndex(h => h.includes('지역') || h.includes('지점'));
+        
+        // 기본값 설정 (못 찾을 경우)
+        if (storeIdx === -1) storeIdx = 0; // 첫 번째가 가맹점이라고 가정
+        if (managerIdx === -1) managerIdx = 1;
+        if (regionIdx === -1) regionIdx = 2;
+
+        const isCountSheet = conn.name.includes('건수');
+        const channelName = isCountSheet ? conn.name.replace('건수', '').trim() : conn.name.trim();
+        
+        // 날짜 데이터 시작 인덱스 (보통 가맹점 정보 이후)
+        const dateStartIdx = Math.max(storeIdx, managerIdx, regionIdx) + 1;
+
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          const storeName = row[storeIdx]?.trim();
+          const managerName = row[managerIdx]?.trim();
+          const region = row[regionIdx]?.trim() || '미지정';
           
-          const headers = rows[0]; 
-          const isCountSheet = conn.name.includes('건수');
-          const rawName = isCountSheet ? conn.name.replace('건수', '').trim() : conn.name.trim();
-          
-          for (let i = 1; i < rows.length; i++) {
-            const row = rows[i];
-            const managerName = row[1]?.trim();
-            const region = row[2]?.trim();
-            const storeName = row[3]?.trim();
-            if (!managerName || managerName === '담당자명' || managerName === '미지정') continue;
-            if (!storeName || storeName === '가맹점명') continue;
+          if (!storeName || storeName === '가맹점명') continue;
+
+          for (let j = dateStartIdx; j < headers.length; j++) {
+            const dateHeader = headers[j];
+            const val = parseFloat(row[j]?.replace(/[^0-9.-]+/g, "") || "0");
             
-            for (let j = 4; j < headers.length; j++) {
-              const dateHeader = headers[j];
-              const valueRaw = row[j]?.replace(/[^0-9.-]+/g, "") || "0";
-              const val = parseFloat(valueRaw);
-              if (dateHeader && val > 0) {
-                let cleanDate = dateHeader.replace(/[\.\/]/g, '-').trim();
-                const parts = cleanDate.split('-');
-                const now = new Date();
-                let finalDate = '';
-                if (parts.length === 1) { 
-                  finalDate = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${parts[0].padStart(2, '0')}`; 
+            if (dateHeader && val > 0) {
+              // 날짜 포맷 정규화 (MM/DD 또는 YYYY-MM-DD)
+              let cleanDate = dateHeader.replace(/[\.\/]/g, '-').trim();
+              const parts = cleanDate.split('-');
+              const now = new Date();
+              let finalDate = '';
+              
+              if (parts.length === 2) finalDate = `${now.getFullYear()}-${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}`;
+              else if (parts.length === 3) finalDate = `${parts[0].length === 2 ? `20${parts[0]}` : parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`;
+              
+              if (/^\d{4}-\d{2}-\d{2}$/.test(finalDate)) {
+                const key = `${storeName}_${finalDate}_${channelName}`;
+                if (!mergedMap[key]) {
+                  mergedMap[key] = { storeName, managerName, region, date: finalDate, channel: channelName, amount: 0, orderCount: 0 };
                 }
-                else if (parts.length === 2) { 
-                  finalDate = `${now.getFullYear()}-${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}`; 
-                }
-                else if (parts.length === 3) { 
-                  finalDate = `${parts[0].length === 2 ? `20${parts[0]}` : parts[0]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`; 
-                }
-                
-                if (/^\d{4}-\d{2}-\d{2}$/.test(finalDate)) {
-                  const key = `${storeName}_${managerName}_${finalDate}_${rawName}`;
-                  if (!mergedMap[key]) { 
-                    mergedMap[key] = { 
-                      storeName, 
-                      managerName, 
-                      region: region || '미지정', 
-                      date: finalDate, 
-                      channel: rawName,
-                      amount: 0, 
-                      orderCount: 0 
-                    }; 
-                  }
-                  if (isCountSheet) { mergedMap[key].orderCount += val; } else { mergedMap[key].amount += val; }
-                }
+                if (isCountSheet) mergedMap[key].orderCount += val;
+                else mergedMap[key].amount += val;
               }
             }
           }
-        } catch (connErr) {
-          console.error(`Error loading connection ${conn.name}:`, connErr);
-          throw new Error(`[${conn.name}] 시트 연동 실패. URL을 확인해 주세요.`);
         }
       }
-      const finalData = Object.values(mergedMap);
-      if (finalData.length === 0) throw new Error("가져올 수 있는 데이터가 없습니다.");
-      onDataLoaded(finalData);
-    } catch (err) { 
-      setError(err instanceof Error ? err.message : "동기화 중 알 수 없는 오류 발생"); 
+      onDataLoaded(Object.values(mergedMap));
+    } catch (err) {
+      setError("데이터 동기화 실패. 시트 공유 설정을 확인하세요.");
+    } finally {
+      setIsLoading(false);
+      onSyncStatusChange?.(false);
     }
-    finally { setIsLoading(false); onSyncStatusChange?.(false); }
   };
 
   return (
     <div className="w-full space-y-6">
-      <div className="bg-slate-900 rounded-[40px] shadow-2xl border border-slate-800 p-8 relative overflow-hidden">
+      <div className="bg-slate-900 rounded-[40px] shadow-2xl border border-slate-800 p-8">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-8 gap-4">
           <div className="flex items-center gap-4">
-            <div className="bg-blue-600 p-4 rounded-2xl shadow-lg shadow-blue-600/20">
+            <div className="bg-blue-600 p-4 rounded-2xl shadow-lg">
               <Database className="text-white w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-black text-white">통합 데이터 소스 관리</h2>
-                {saveStatus === 'saved' && ( <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest animate-pulse">Saved</span> )}
-              </div>
-              <p className="text-slate-500 text-xs font-bold uppercase tracking-widest">Sales Analysis Master Admin</p>
+              <h2 className="text-xl font-black text-white">데이터 소스 관리</h2>
+              <p className="text-slate-500 text-xs font-bold uppercase tracking-widest">Google Sheets Connect</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <button onClick={clearAllConnections} disabled={isLoading} className="bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 px-4 py-2.5 rounded-xl text-xs font-black transition-all flex items-center gap-2">
-              <RotateCcw size={14} /> 초기화
-            </button>
-            <button onClick={() => setShowBulkModal(true)} disabled={isLoading} className="bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 px-4 py-2.5 rounded-xl text-xs font-black transition-all">
-              일괄 등록
-            </button>
-            <button onClick={startAnalysis} disabled={isLoading || connections.length === 0} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-xs font-black transition-all hover:bg-blue-700 flex items-center gap-2 shadow-lg">
+          <div className="flex gap-3">
+            <button onClick={clearAllConnections} className="bg-slate-800 text-slate-400 px-4 py-2.5 rounded-xl text-xs font-black hover:bg-slate-700 transition-all">초기화</button>
+            <button onClick={() => setShowBulkModal(true)} className="bg-slate-800 text-slate-300 px-4 py-2.5 rounded-xl text-xs font-black hover:bg-slate-700 transition-all">일괄 등록</button>
+            <button onClick={startAnalysis} disabled={isLoading || connections.length === 0} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-xs font-black hover:bg-blue-700 flex items-center gap-2 shadow-lg">
               {isLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
               통합 동기화 가동
             </button>
@@ -290,33 +259,24 @@ const DataUploader: React.FC<Props> = ({ onDataLoaded, autoStart = false, onSync
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mb-8">
           <div className="md:col-span-3">
-            <input type="text" placeholder="채널/시트 별칭" value={newName} onChange={(e) => setNewName(e.target.value)} className="w-full bg-slate-800 border-2 border-transparent rounded-xl px-4 py-3 text-sm font-bold text-white focus:border-blue-500 outline-none transition-all" />
+            <input type="text" placeholder="채널 명칭 (예: 배민)" value={newName} onChange={(e) => setNewName(e.target.value)} className="w-full bg-slate-800 border-2 border-transparent rounded-xl px-4 py-3 text-sm font-bold text-white focus:border-blue-500 outline-none" />
           </div>
           <div className="md:col-span-7">
-            <input type="text" placeholder="Google Sheets 공유 URL (CSV 내보내기 가능 상태)" value={newUrl} onChange={(e) => setNewUrl(e.target.value)} className="w-full bg-slate-800 border-2 border-transparent rounded-xl px-4 py-3 text-sm font-bold text-white focus:border-blue-500 outline-none transition-all" />
+            <input type="text" placeholder="시트 공유 URL" value={newUrl} onChange={(e) => setNewUrl(e.target.value)} className="w-full bg-slate-800 border-2 border-transparent rounded-xl px-4 py-3 text-sm font-bold text-white focus:border-blue-500 outline-none" />
           </div>
           <div className="md:col-span-2">
-            <button onClick={verifyAndAddConnection} disabled={!newUrl || isVerifying || isLoading} className="w-full bg-blue-600 text-white py-3 rounded-xl font-black hover:bg-blue-700 transition-all text-sm disabled:opacity-50">연결 추가</button>
+            <button onClick={verifyAndAddConnection} className="w-full bg-blue-600 text-white py-3 rounded-xl font-black hover:bg-blue-700 transition-all text-sm">추가</button>
           </div>
         </div>
 
-        <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+        <div className="space-y-3">
           {connections.map((conn) => (
-            <div key={conn.id} className="flex items-center justify-between p-4 bg-slate-800/30 border border-slate-800 rounded-2xl transition-all hover:bg-slate-800/60">
-              <div className="flex items-center gap-3 overflow-hidden">
-                <div className={`p-2.5 rounded-xl ${conn.name.includes('건수') ? 'bg-emerald-500/10 text-emerald-500' : 'bg-blue-500/10 text-blue-500'}`}>
-                  <LinkIcon size={14} />
-                </div>
-                <div className="overflow-hidden">
-                  <div className="font-black text-slate-200 text-sm flex items-center gap-2">
-                    {conn.name}
-                  </div>
-                  <div className="text-[10px] text-slate-500 truncate font-medium">{conn.url}</div>
-                </div>
+            <div key={conn.id} className="flex items-center justify-between p-4 bg-slate-800/30 border border-slate-800 rounded-2xl">
+              <div className="flex items-center gap-3">
+                <LinkIcon size={14} className="text-blue-500" />
+                <span className="font-black text-slate-200 text-sm">{conn.name}</span>
               </div>
-              <button onClick={() => setConnections(prev => prev.filter(c => c.id !== conn.id))} className="p-3 text-slate-600 hover:text-red-500 transition-all">
-                <Trash2 size={16} />
-              </button>
+              <button onClick={() => setConnections(prev => prev.filter(c => c.id !== conn.id))} className="text-slate-600 hover:text-red-500"><Trash2 size={16} /></button>
             </div>
           ))}
         </div>
@@ -324,25 +284,12 @@ const DataUploader: React.FC<Props> = ({ onDataLoaded, autoStart = false, onSync
 
       {showBulkModal && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="bg-slate-900 w-full max-w-2xl rounded-[40px] shadow-2xl border border-slate-800 overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-8 border-b border-slate-800 flex items-center justify-between">
-              <h3 className="text-xl font-black text-white">데이터 소스 일괄 등록</h3>
-              <button onClick={() => setShowBulkModal(false)} className="p-2 text-slate-500 hover:text-white transition-colors"><X size={24} /></button>
-            </div>
-            <div className="p-8 space-y-6">
-              <div className="bg-blue-900/20 p-5 rounded-3xl border border-blue-800/30 text-blue-400 text-xs font-bold leading-relaxed">
-                "시트별칭: 시트URL" 형식을 한 줄에 하나씩 입력하세요.
-              </div>
-              <textarea 
-                value={bulkText}
-                onChange={(e) => setBulkText(e.target.value)}
-                placeholder="25년 배민매출: https://docs.google.com/..."
-                className="w-full h-64 bg-slate-800 border-none rounded-[32px] p-6 text-sm font-mono text-slate-200 focus:ring-2 focus:ring-blue-500/20 outline-none resize-none"
-              ></textarea>
-              <div className="flex justify-end gap-3 pt-4">
-                <button onClick={() => setShowBulkModal(false)} className="px-6 py-4 bg-slate-800 text-slate-400 rounded-2xl font-black text-sm hover:bg-slate-700 transition-all">취소</button>
-                <button onClick={handleBulkImport} className="px-10 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm hover:bg-blue-700 transition-all">일괄 추가하기</button>
-              </div>
+          <div className="bg-slate-900 w-full max-w-xl rounded-[40px] p-8 border border-slate-800">
+            <h3 className="text-xl font-black text-white mb-6">일괄 등록 (형식 - 이름:URL)</h3>
+            <textarea value={bulkText} onChange={(e) => setBulkText(e.target.value)} className="w-full h-64 bg-slate-800 rounded-3xl p-6 text-sm text-slate-200 outline-none mb-6"></textarea>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setShowBulkModal(false)} className="px-6 py-3 bg-slate-800 text-slate-400 rounded-xl font-black text-sm">취소</button>
+              <button onClick={handleBulkImport} className="px-8 py-3 bg-blue-600 text-white rounded-xl font-black text-sm">등록하기</button>
             </div>
           </div>
         </div>
