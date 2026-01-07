@@ -1,0 +1,7 @@
+{
+  "name": "매출분석 마스터 프로그램",
+  "description": "가맹점, 담당자, 기간 및 채널별로 매출과 건수를 정밀 분석하고 AI 상권 분석까지 제공하는 전문 경영 솔루션입니다.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

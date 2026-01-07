@@ -1,0 +1,18 @@
+
+{
+  "name": "매출분석 마스터 - Corporate Edition",
+  "short_name": "매출분석",
+  "description": "가맹점 및 본사용 전문 매출 분석 솔루션",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/1150/1150612.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
