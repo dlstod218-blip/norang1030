@@ -1,0 +1,183 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>jc_매출분석 마스터</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+      body {
+        font-family: 'Inter', 'Noto Sans KR', sans-serif;
+        background-color: #020617; /* Slate 950 */
+      }
+      /* Custom Scrollbar */
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: #334155;
+        border-radius: 10px;
+      }
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: #475569;
+      }
+
+      /* PRINT ENGINE - MAXIMUM PRIORITY */
+      @media print {
+        /* Define A4 physical properties */
+        @page {
+          size: A4;
+          margin: 10mm 10mm 15mm 10mm;
+        }
+
+        /* 1. FORCE HIDE EVERYTHING BY DEFAULT */
+        header, 
+        nav, 
+        aside, 
+        footer, 
+        button, 
+        input, 
+        select, 
+        textarea,
+        .no-print,
+        [role="dialog"],
+        #data-uploader-root {
+          display: none !important;
+          visibility: hidden !important;
+          height: 0 !important;
+          margin: 0 !important;
+          padding: 0 !important;
+        }
+
+        /* 2. RESET BODY FOR PRINT */
+        html, body {
+          background-color: white !important;
+          color: black !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          width: 100% !important;
+          height: auto !important;
+          font-size: 11pt !important;
+        }
+
+        #root {
+          display: block !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          background: white !important;
+        }
+
+        /* 3. TARGET MAIN CONTENT ONLY */
+        main {
+          display: block !important;
+          max-width: 100% !important;
+          width: 100% !important;
+          margin: 0 !important;
+          padding: 0 !important;
+          background: white !important;
+        }
+
+        /* 4. CONVERT DARK CARDS TO PRINT FRIENDLY */
+        .bg-slate-900, 
+        .bg-slate-950, 
+        .bg-slate-800, 
+        .bg-slate-900\/90,
+        .bg-slate-800\/20,
+        .bg-slate-800\/30,
+        .bg-slate-800\/40 {
+          background-color: white !important;
+          border: 1pt solid #cbd5e1 !important;
+          box-shadow: none !important;
+          color: black !important;
+          border-radius: 4pt !important;
+          margin-bottom: 15pt !important;
+          padding: 15pt !important;
+          page-break-inside: avoid !important;
+        }
+
+        /* 5. TEXT COLOR OVERRIDES */
+        .text-white, .text-slate-50, .text-slate-200, .text-slate-300, .text-slate-100 {
+          color: black !important;
+        }
+        .text-slate-400, .text-slate-500, .text-slate-600 {
+          color: #475569 !important;
+        }
+        
+        /* 6. GRID TO LINEAR FOR PRINT FLOW */
+        .grid {
+          display: block !important;
+        }
+        .grid > div {
+          display: block !important;
+          width: 100% !important;
+          margin-bottom: 15pt !important;
+          page-break-inside: avoid !important;
+        }
+
+        /* 7. RECHARTS & TABLES */
+        .recharts-wrapper {
+          background-color: transparent !important;
+        }
+        table {
+          width: 100% !important;
+          border-collapse: collapse !important;
+          margin-bottom: 10pt !important;
+        }
+        th, td {
+          border: 1pt solid #e2e8f0 !important;
+          padding: 6pt !important;
+          color: black !important;
+        }
+
+        /* 8. BRAND COLORS (KEEP FOR RECOGNITION) */
+        .text-blue-500, .text-blue-400, .text-blue-600 { color: #2563eb !important; }
+        .text-emerald-500, .text-emerald-400 { color: #059669 !important; }
+        .text-rose-500, .text-rose-400 { color: #e11d48 !important; }
+        .text-amber-500, .text-amber-400 { color: #d97706 !important; }
+
+        /* 9. PRINT HEADER DISPLAY */
+        .print-only-report-header {
+          display: block !important;
+          margin-bottom: 30pt !important;
+          border-bottom: 2pt solid #1e293b !important;
+          padding-bottom: 10pt !important;
+        }
+
+        /* Remove animations */
+        * {
+          animation: none !important;
+          transition: none !important;
+        }
+      }
+
+      /* Non-print helper */
+      .print-only-report-header {
+        display: none;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "recharts": "https://esm.sh/recharts@^3.6.0",
+    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "date-fns/": "https://esm.sh/date-fns@^4.1.0/",
+    "date-fns": "https://esm.sh/date-fns@^4.1.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>
