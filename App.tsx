@@ -1,7 +1,8 @@
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { TrendingUp, Settings, Lock, AlertCircle, Loader2, Cloud, CloudOff, CloudSync, Share2, User, Store, Filter, X, ChevronDown, LayoutDashboard, Printer, CheckCircle, FileText, LogOut, KeyRound, UserPlus, Users, Trash2, ShieldCheck, Sparkles } from 'lucide-react';
-import { RawSalesData, normalizeChannel, getChannelType, UserAccount } from './types';
+import { RawSalesData, normalizeChannel, getChannelType } from './types';
+import { supabase, type AppProfile } from './supabaseClient';
 import { parseISO, isValid, isWithinInterval, startOfDay, endOfDay, format, subDays, getYear } from 'date-fns';
 import DataUploader from './components/DataUploader';
 import DashboardOverview from './components/DashboardOverview';
@@ -12,12 +13,20 @@ import PnLAnalysis from './components/PnLAnalysis';
 import CommercialAnalysis from './components/CommercialAnalysis';
 import StoreDetailAnalysis from './components/StoreDetailAnalysis';
 
-const STORAGE_ACCOUNTS_KEY = 'sales_insight_master_accounts';
+type AuthState = {
+  isLoading: boolean;
+  accessToken: string | null;
+  profile: AppProfile | null;
+};
 
-const INITIAL_ACCOUNTS: UserAccount[] = [
-  { id: 'admin', name: '마스터 관리자', password: '0000', role: 'ADMIN' },
-  { id: 'staff1', name: '지원팀1', password: '1111', role: 'USER' },
-];
+type AdminUserRow = {
+  user_id: string;
+  username: string;
+  display_name: string;
+  role: 'MASTER' | 'STAFF';
+  active: boolean;
+  created_at?: string;
+};
 
 const App: React.FC = () => {
   const [data, setData] = useState<RawSalesData[]>([]);
@@ -25,20 +34,22 @@ const App: React.FC = () => {
   const [cloudStatus, setCloudStatus] = useState<'connected' | 'syncing' | 'error'>('connected');
   const [activeTab, setActiveTab] = useState<'overview' | 'detailed' | 'pnl' | 'store_detail' | 'commercial'>('overview');
   
-  // Auth & Accounts State
-  const [accounts, setAccounts] = useState<UserAccount[]>(() => {
-    const saved = localStorage.getItem(STORAGE_ACCOUNTS_KEY);
-    return saved ? JSON.parse(saved) : INITIAL_ACCOUNTS;
+  // Supabase Auth State
+  const [auth, setAuth] = useState<AuthState>({
+    isLoading: true,
+    accessToken: null,
+    profile: null,
   });
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
-  const [idInput, setIdInput] = useState("");
+  const [emailInput, setEmailInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
-  const [authError, setAuthError] = useState(false);
-  
-  // User Management State
-  const [newUserId, setNewUserId] = useState("");
-  const [newUserName, setNewUserName] = useState("");
-  const [newUserPw, setNewUserPw] = useState("");
+  const [authErrorMsg, setAuthErrorMsg] = useState<string | null>(null);
+
+  // Admin: staff management (MASTER only)
+  const [adminUsers, setAdminUsers] = useState<AdminUserRow[]>([]);
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserDisplayName, setNewUserDisplayName] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState<'MASTER' | 'STAFF'>('STAFF');
   const [settingsTab, setSettingsTab] = useState<'data' | 'users'>('data');
 
   const [showSettings, setShowSettings] = useState(false);
@@ -51,68 +62,164 @@ const App: React.FC = () => {
   const [selectedManager, setSelectedManager] = useState<string>('all');
   const [selectedStore, setSelectedStore] = useState<string>('all');
 
-  // Persist accounts
+  // Bootstrap auth session + profile
   useEffect(() => {
-    localStorage.setItem(STORAGE_ACCOUNTS_KEY, JSON.stringify(accounts));
-  }, [accounts]);
+    let mounted = true;
+
+    const loadProfile = async (accessToken: string) => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const uid = sessionData.session?.user?.id;
+      if (!uid) {
+        if (mounted) setAuth({ isLoading: false, accessToken: null, profile: null });
+        return;
+      }
+      const { data, error } = await supabase
+        .from('app_profiles')
+        .select('user_id, username, display_name, role, active')
+        .eq('user_id', uid)
+        .maybeSingle();
+
+      if (error || !data) {
+        // 계정은 있으나 권한 테이블에 미등록이면 로그아웃 처리
+        await supabase.auth.signOut();
+        if (mounted) {
+          setAuth({ isLoading: false, accessToken: null, profile: null });
+          setAuthErrorMsg('권한이 등록되지 않았습니다. 관리자에게 문의하세요.');
+        }
+        return;
+      }
+
+      if (!data.active) {
+        await supabase.auth.signOut();
+        if (mounted) {
+          setAuth({ isLoading: false, accessToken: null, profile: null });
+          setAuthErrorMsg('비활성화된 계정입니다. 관리자에게 문의하세요.');
+        }
+        return;
+      }
+
+      if (mounted) setAuth({ isLoading: false, accessToken, profile: data as AppProfile });
+    };
+
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token || null;
+      if (token) {
+        await loadProfile(token);
+      } else {
+        if (mounted) setAuth({ isLoading: false, accessToken: null, profile: null });
+      }
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_evt, session) => {
+      const token = session?.access_token || null;
+      if (!mounted) return;
+      if (!token) {
+        setAuth({ isLoading: false, accessToken: null, profile: null });
+        return;
+      }
+      setAuth(prev => ({ ...prev, isLoading: true }));
+      await loadProfile(token);
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
 
   const handleDataLoaded = (loadedData: RawSalesData[]) => {
     setData(loadedData);
   };
 
-  const handleLogin = () => {
-    const user = accounts.find(acc => acc.id === idInput && acc.password === passwordInput);
-    if (user) {
-      setCurrentUser(user);
-      setAuthError(false);
-      setIdInput("");
+  const handleLogin = async () => {
+    setAuthErrorMsg(null);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: emailInput.trim(),
+        password: passwordInput,
+      });
+      if (error || !data.session) {
+        setAuthErrorMsg('로그인 실패: 이메일/비밀번호를 확인하세요.');
+        return;
+      }
+      // onAuthStateChange에서 profile 로드됨
+      setEmailInput("");
       setPasswordInput("");
-    } else {
-      setAuthError(true);
-      setTimeout(() => setAuthError(false), 2000);
+    } catch (e) {
+      setAuthErrorMsg('로그인 실패: 잠시 후 다시 시도하세요.');
     }
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
     setShowSettings(false);
     setData([]);
   };
 
-  const handleAddUser = () => {
-    if (!newUserId || !newUserName || !newUserPw) {
-      alert("모든 정보를 입력하세요.");
-      return;
-    }
-    if (accounts.some(acc => acc.id === newUserId)) {
-      alert("이미 존재하는 아이디입니다.");
-      return;
-    }
-    const newUser: UserAccount = {
-      id: newUserId,
-      name: newUserName,
-      password: newUserPw,
-      role: 'USER'
-    };
-    setAccounts(prev => [...prev, newUser]);
-    setNewUserId("");
-    setNewUserName("");
-    setNewUserPw("");
-  };
+  const fetchAdminUsers = useCallback(async () => {
+    if (!auth.accessToken) return;
+    const res = await fetch('/api/admin/users', {
+      headers: { Authorization: `Bearer ${auth.accessToken}` },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error || 'Failed');
+    setAdminUsers(json.users || []);
+  }, [auth.accessToken]);
 
-  const handleDeleteUser = (id: string) => {
-    if (id === 'admin') {
-      alert("마스터 관리자 계정은 삭제할 수 없습니다.");
+  const handleAddUser = useCallback(async () => {
+    if (!newUserEmail || !newUserDisplayName || !newUserPassword) {
+      alert('이메일/이름/비밀번호를 모두 입력하세요.');
       return;
     }
-    if (currentUser?.id === id) {
-      alert("현재 접속 중인 계정은 삭제할 수 없습니다.");
+    if (!auth.accessToken) return;
+    const res = await fetch('/api/admin/create-user', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${auth.accessToken}`,
+      },
+      body: JSON.stringify({
+        email: newUserEmail.trim(),
+        password: newUserPassword,
+        display_name: newUserDisplayName,
+        role: newUserRole,
+      }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      alert(json?.error || '직원 생성 실패');
       return;
     }
-    if (window.confirm(`계정 ID [${id}]를 시스템에서 완전히 삭제하시겠습니까?`)) {
-      setAccounts(prev => prev.filter(acc => acc.id !== id));
+    setNewUserEmail('');
+    setNewUserDisplayName('');
+    setNewUserPassword('');
+    setNewUserRole('STAFF');
+    await fetchAdminUsers();
+  }, [auth.accessToken, fetchAdminUsers, newUserEmail, newUserDisplayName, newUserPassword, newUserRole]);
+
+  const handleDeleteUser = useCallback(async (user_id: string) => {
+    if (!auth.accessToken) return;
+    if (auth.profile?.user_id === user_id) {
+      alert('현재 로그인한 계정은 삭제할 수 없습니다.');
+      return;
     }
-  };
+    if (!window.confirm('해당 계정을 완전히 삭제하시겠습니까?')) return;
+    const res = await fetch('/api/admin/delete-user', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${auth.accessToken}`,
+      },
+      body: JSON.stringify({ user_id }),
+    });
+    const json = await res.json();
+    if (!res.ok) {
+      alert(json?.error || '삭제 실패');
+      return;
+    }
+    await fetchAdminUsers();
+  }, [auth.accessToken, auth.profile?.user_id, fetchAdminUsers]);
 
   const handlePrint = () => {
     setIsPreparingPrint(true);
@@ -256,7 +363,18 @@ const App: React.FC = () => {
   }, [activeTab]);
 
   // LOGIN SCREEN
-  if (!currentUser) {
+  if (auth.isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+        <div className="flex items-center gap-3 text-slate-300 font-black">
+          <Loader2 className="animate-spin" size={20} />
+          세션 확인 중...
+        </div>
+      </div>
+    );
+  }
+
+  if (!auth.profile) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6 relative overflow-hidden">
         {/* Dynamic Collage of Brand Images */}
@@ -306,11 +424,11 @@ const App: React.FC = () => {
                 <User className="text-slate-500 group-focus-within/field:text-yellow-400 transition-colors" size={20} />
                 <div className="w-px h-5 bg-slate-800"></div>
               </div>
-              <input 
-                type="text" 
-                placeholder="USER ID" 
-                value={idInput} 
-                onChange={(e) => setIdInput(e.target.value)} 
+              <input
+                type="email"
+                placeholder="EMAIL"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
                 className="w-full bg-slate-900/50 border border-slate-800/60 rounded-[28px] pl-16 pr-8 py-4.5 text-sm font-bold text-white focus:border-yellow-400/50 focus:bg-slate-900/80 outline-none transition-all placeholder:text-slate-600 shadow-inner" 
               />
             </div>
@@ -330,10 +448,10 @@ const App: React.FC = () => {
               />
             </div>
             
-            {authError && (
+            {authErrorMsg && (
               <div className="bg-rose-500/10 border border-rose-500/20 py-4 rounded-2xl text-rose-500 text-[11px] font-black animate-in shake duration-300 flex items-center justify-center gap-2">
                 <AlertCircle size={16} />
-                데이터베이스에 등록된 계정 정보가 일치하지 않습니다.
+                {authErrorMsg}
               </div>
             )}
             
@@ -368,12 +486,12 @@ const App: React.FC = () => {
           onDataLoaded={handleDataLoaded} 
           autoStart={true} 
           onSyncStatusChange={setIsSyncing} 
-          showUI={showSettings && currentUser.role === 'ADMIN' && settingsTab === 'data'} 
+          showUI={showSettings && auth.profile?.role === 'MASTER' && settingsTab === 'data'} 
         />
       </div>
 
       {/* ADMIN USER MANAGEMENT UI */}
-      {showSettings && currentUser.role === 'ADMIN' && settingsTab === 'users' && (
+      {showSettings && auth.profile?.role === 'MASTER' && settingsTab === 'users' && (
         <div className="max-w-7xl mx-auto w-full px-4 mb-10 animate-in slide-in-from-top-6 duration-500">
           <div className="bg-slate-900 rounded-[40px] shadow-2xl border border-slate-800 p-8">
             <div className="flex items-center gap-4 mb-8">
@@ -386,33 +504,49 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8 p-6 bg-slate-800/30 rounded-3xl border border-slate-800">
-              <input type="text" placeholder="접속 ID" value={newUserId} onChange={(e) => setNewUserId(e.target.value)} className="bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-blue-500" />
-              <input type="text" placeholder="성함" value={newUserName} onChange={(e) => setNewUserName(e.target.value)} className="bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-blue-500" />
-              <input type="password" placeholder="비밀번호" value={newUserPw} onChange={(e) => setNewUserPw(e.target.value)} className="bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-blue-500" />
-              <button onClick={handleAddUser} className="bg-blue-600 text-white rounded-xl font-black text-sm flex items-center justify-center gap-2 hover:bg-blue-700 transition-all"><UserPlus size={18} /> 계정 생성</button>
+            <div className="flex items-center justify-between mb-4">
+              <button
+                onClick={() => fetchAdminUsers().catch(e => alert(e.message))}
+                className="text-xs font-black px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 hover:bg-slate-700"
+              >
+                목록 새로고침
+              </button>
+              <p className="text-[11px] text-slate-500 font-bold">※ 계정 생성/삭제는 Supabase Auth + app_profiles에 자동 반영됩니다.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-8 p-6 bg-slate-800/30 rounded-3xl border border-slate-800">
+              <input type="email" placeholder="직원 이메일" value={newUserEmail} onChange={(e) => setNewUserEmail(e.target.value)} className="bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-blue-500" />
+              <input type="text" placeholder="표시 이름" value={newUserDisplayName} onChange={(e) => setNewUserDisplayName(e.target.value)} className="bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-blue-500" />
+              <input type="password" placeholder="초기 비밀번호" value={newUserPassword} onChange={(e) => setNewUserPassword(e.target.value)} className="bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-blue-500" />
+              <select value={newUserRole} onChange={(e) => setNewUserRole(e.target.value as any)} className="bg-slate-800 border-none rounded-xl px-4 py-3 text-sm font-black text-white outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="STAFF">STAFF</option>
+                <option value="MASTER">MASTER</option>
+              </select>
+              <button onClick={() => handleAddUser().catch(e => alert(e.message))} className="bg-blue-600 text-white rounded-xl font-black text-sm flex items-center justify-center gap-2 hover:bg-blue-700 transition-all"><UserPlus size={18} /> 계정 생성</button>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {accounts.map(acc => (
-                <div key={acc.id} className="p-5 bg-slate-800/40 border border-slate-800 rounded-3xl flex items-center justify-between group">
+              {adminUsers.map(u => (
+                <div key={u.user_id} className="p-5 bg-slate-800/40 border border-slate-800 rounded-3xl flex items-center justify-between group">
                   <div className="flex items-center gap-4">
-                    <div className={`p-3 rounded-2xl ${acc.role === 'ADMIN' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500'}`}>
-                      {acc.role === 'ADMIN' ? <ShieldCheck size={20} /> : <User size={20} />}
+                    <div className={`p-3 rounded-2xl ${u.role === 'MASTER' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500'}`}>
+                      {u.role === 'MASTER' ? <ShieldCheck size={20} /> : <User size={20} />}
                     </div>
                     <div>
                       <div className="font-black text-white text-sm flex items-center gap-2">
-                        {acc.name}
-                        {acc.role === 'ADMIN' && <span className="bg-amber-500/10 text-amber-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-amber-500/20">MASTER</span>}
+                        {u.display_name}
+                        {u.role === 'MASTER' && <span className="bg-amber-500/10 text-amber-500 text-[8px] font-black px-1.5 py-0.5 rounded border border-amber-500/20">MASTER</span>}
+                        {!u.active && <span className="bg-rose-500/10 text-rose-400 text-[8px] font-black px-1.5 py-0.5 rounded border border-rose-500/20">DISABLED</span>}
                       </div>
-                      <div className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">ID: {acc.id} / PW: {acc.password}</div>
+                      <div className="text-[10px] text-slate-500 font-bold uppercase tracking-tight">{u.username}</div>
                     </div>
                   </div>
-                  {acc.id !== 'admin' && (
-                    <button onClick={() => handleDeleteUser(acc.id)} className="p-2 text-slate-600 hover:text-rose-500 transition-colors"><Trash2 size={18} /></button>
-                  )}
+                  <button onClick={() => handleDeleteUser(u.user_id).catch(e => alert(e.message))} className="p-2 text-slate-600 hover:text-rose-500 transition-colors" title="삭제"><Trash2 size={18} /></button>
                 </div>
               ))}
+              {adminUsers.length === 0 && (
+                <div className="col-span-full text-slate-500 text-sm font-bold">직원 목록이 비어있습니다. "목록 새로고침"을 눌러주세요.</div>
+              )}
             </div>
           </div>
         </div>
@@ -426,7 +560,7 @@ const App: React.FC = () => {
             </div>
             <div>
               <h1 className="text-lg font-black text-white tracking-tight leading-none">jc_매출분석 <span className="text-yellow-400">마스터</span></h1>
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">{currentUser.name} 접속 중</p>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">{auth.profile.display_name} 접속 중</p>
             </div>
           </div>
           
@@ -446,7 +580,7 @@ const App: React.FC = () => {
               <span className="text-[11px] font-black hidden sm:inline">{isPreparingPrint ? '인쇄 전송중...' : '리포트 인쇄'}</span>
             </button>
 
-            {currentUser.role === 'ADMIN' && (
+            {auth.profile.role === 'MASTER' && (
               <div className="flex bg-slate-800 p-1 rounded-xl border border-slate-700">
                 <button 
                   onClick={() => { setShowSettings(true); setSettingsTab('data'); }} 
